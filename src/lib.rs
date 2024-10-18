@@ -54,20 +54,18 @@ impl AssetLoader for H264VideoLoader {
 
     type Error = H264VideoLoaderError;
 
-    fn load<'a>(
+    async fn load<'a>(
         &'a self,
-        reader: &'a mut bevy_asset::io::Reader,
+        reader: &'a mut bevy_asset::io::Reader<'_>,
         _settings: &'a Self::Settings,
-        _load_context: &'a mut bevy_asset::LoadContext,
-    ) -> bevy_asset::BoxedFuture<'a, Result<Self::Asset, Self::Error>> {
-        Box::pin(async move {
-            let mut bytes = Vec::new();
-            reader.read_to_end(&mut bytes).await?;
-            let buffer = nal_units(bytes.as_slice())
-                .map(|nal| nal.to_vec())
-                .collect();
-            Ok(H264Video { buffer })
-        })
+        _load_context: &'a mut bevy_asset::LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        let buffer = nal_units(bytes.as_slice())
+            .map(|nal| nal.to_vec())
+            .collect();
+        Ok(H264Video { buffer })
     }
 
     fn extensions(&self) -> &[&str] {
@@ -224,7 +222,7 @@ fn begin_decode(
 
         if match asset_server.get_load_state(&decoder.video) {
             Some(load_state) => {
-                matches!(load_state, LoadState::Failed)
+                matches!(load_state, LoadState::Failed(_))
                     || matches!(load_state, LoadState::NotLoaded)
             }
             _ => false,

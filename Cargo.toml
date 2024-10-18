@@ -12,12 +12,12 @@ keywords = ["Bevy", "Video", "h264"]
 [dependencies]
 openh264 = "0.4"
 thiserror = "1.0"
-bevy_asset = "0.13"
-bevy_reflect = "0.13"
-bevy_render = "0.13"
-bevy_ecs = "0.13"
-bevy_time = "0.13"
-bevy_app = "0.13"
+bevy_asset = "0.14"
+bevy_reflect = "0.14"
+bevy_render = "0.14"
+bevy_ecs = "0.14"
+bevy_time = "0.14"
+bevy_app = "0.14"
 
 [workspace]
 members = [

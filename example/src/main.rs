@@ -8,12 +8,11 @@ use bevy::{
         schedule::IntoSystemConfigs,
         system::{Commands, Query, Res, ResMut},
     },
+    math::prelude::Plane3d,
     math::Vec3,
     pbr::{AmbientLight, PbrBundle, StandardMaterial},
-    render::{
-        mesh::{shape::Plane, Mesh},
-        texture::Image,
-    },
+    render::prelude::Meshable,
+    render::{mesh::Mesh, texture::Image},
     transform::components::Transform,
     utils::default,
     DefaultPlugins,
@@ -40,7 +39,7 @@ fn setup(
 
     commands
         .spawn(PbrBundle {
-            mesh: meshes.add(Plane::from_size(5.0)),
+            mesh: meshes.add(Plane3d::default().mesh().size(5.0, 5.0)),
             material: materials.add(StandardMaterial {
                 base_color_texture: Some(decoder.get_render_target()),
                 ..default()
