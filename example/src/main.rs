@@ -1,4 +1,23 @@
-use bevy::{app::{App, FixedUpdate, Startup}, asset::{AssetServer, Assets, Handle}, core_pipeline::core_3d::Camera3dBundle, ecs::{event::EventReader, query::With, schedule::IntoSystemConfigs, system::{Commands, Query, Res, ResMut}}, math::Vec3, pbr::{AmbientLight, PbrBundle, StandardMaterial}, render::{mesh::{shape::Plane, Mesh}, texture::Image}, transform::components::Transform, utils::default, DefaultPlugins};
+use bevy::{
+    app::{App, FixedUpdate, Startup},
+    asset::{AssetServer, Assets, Handle},
+    core_pipeline::core_3d::Camera3dBundle,
+    ecs::{
+        event::EventReader,
+        query::With,
+        schedule::IntoSystemConfigs,
+        system::{Commands, Query, Res, ResMut},
+    },
+    math::Vec3,
+    pbr::{AmbientLight, PbrBundle, StandardMaterial},
+    render::{
+        mesh::{shape::Plane, Mesh},
+        texture::Image,
+    },
+    transform::components::Transform,
+    utils::default,
+    DefaultPlugins,
+};
 use bevy_h264::{decode_video, H264Decoder, H264DecoderLoading, H264Plugin, H264UpdateEvent};
 
 fn main() {
@@ -17,22 +36,19 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
 ) {
-    let decoder = H264Decoder::new(
-        &mut images,
-        asset_server.load("test.h264"),
-        false,
-    );
+    let decoder = H264Decoder::new(&mut images, asset_server.load("test.h264"), false);
 
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Plane::from_size(5.0)),
-        material: materials.add(StandardMaterial {
-            base_color_texture: Some(decoder.get_render_target()),
+    commands
+        .spawn(PbrBundle {
+            mesh: meshes.add(Plane::from_size(5.0)),
+            material: materials.add(StandardMaterial {
+                base_color_texture: Some(decoder.get_render_target()),
+                ..default()
+            }),
             ..default()
-        }),
-        ..default()
-    })
-    .insert(decoder)
-    .insert(H264DecoderLoading {});
+        })
+        .insert(decoder)
+        .insert(H264DecoderLoading {});
 
     commands.insert_resource(AmbientLight {
         brightness: 1000.0,

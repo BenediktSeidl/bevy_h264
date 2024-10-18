@@ -1,12 +1,34 @@
-use std::{collections::VecDeque, sync::{mpsc::{channel, Sender}, Arc, Mutex}};
+use std::{
+    collections::VecDeque,
+    sync::{
+        mpsc::{channel, Sender},
+        Arc, Mutex,
+    },
+};
 
 use bevy_app::{FixedUpdate, Plugin, PreUpdate, Update};
-use bevy_asset::{Asset, AssetApp, AssetLoader, AssetServer, Assets, AsyncReadExt, Handle, LoadState};
-use bevy_ecs::{component::Component, entity::Entity, event::{Event, EventReader, EventWriter}, query::{Has, With, Without}, schedule::IntoSystemConfigs, system::{Commands, Query, Res, ResMut}};
+use bevy_asset::{
+    Asset, AssetApp, AssetLoader, AssetServer, Assets, AsyncReadExt, Handle, LoadState,
+};
+use bevy_ecs::{
+    component::Component,
+    entity::Entity,
+    event::{Event, EventReader, EventWriter},
+    query::{Has, With, Without},
+    schedule::IntoSystemConfigs,
+    system::{Commands, Query, Res, ResMut},
+};
 use bevy_reflect::TypePath;
-use bevy_render::{render_asset::RenderAssetUsages, render_resource::{Extent3d, TextureDimension, TextureFormat}, texture::Image};
+use bevy_render::{
+    render_asset::RenderAssetUsages,
+    render_resource::{Extent3d, TextureDimension, TextureFormat},
+    texture::Image,
+};
 use bevy_time::{Fixed, Time};
-use openh264::{decoder::{DecodedYUV, Decoder, DecoderConfig}, nal_units};
+use openh264::{
+    decoder::{DecodedYUV, Decoder, DecoderConfig},
+    nal_units,
+};
 use thiserror::Error;
 
 const BUF_SIZE: usize = 10;
@@ -25,7 +47,7 @@ pub enum H264VideoLoaderError {
     Io(#[from] std::io::Error),
 }
 
-impl AssetLoader for H264VideoLoader{
+impl AssetLoader for H264VideoLoader {
     type Asset = H264Video;
 
     type Settings = ();
@@ -41,10 +63,10 @@ impl AssetLoader for H264VideoLoader{
         Box::pin(async move {
             let mut bytes = Vec::new();
             reader.read_to_end(&mut bytes).await?;
-            let buffer = nal_units(bytes.as_slice()).map(|nal| nal.to_vec()).collect();
-            Ok(H264Video {
-                buffer,
-            })
+            let buffer = nal_units(bytes.as_slice())
+                .map(|nal| nal.to_vec())
+                .collect();
+            Ok(H264Video { buffer })
         })
     }
 
@@ -69,7 +91,7 @@ pub struct H264Decoder {
     video: Handle<H264Video>,
     render_target: Handle<Image>,
     repeat: bool,
-    
+
     next_frame: usize,
     frame_count: usize,
 
@@ -86,14 +108,16 @@ impl H264Decoder {
                 width: 12,
                 height: 12,
                 depth_or_array_layers: 1,
-            }, 
+            },
             TextureDimension::D2,
             &[0, 0, 0, 0],
-            TextureFormat::Bgra8UnormSrgb, 
+            TextureFormat::Bgra8UnormSrgb,
             RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
         ));
         let (sender, receiver) = channel::<DecoderMessage>();
-        let next_frame_rgb8 = Arc::new(Mutex::new(VecDeque::<VideoFrame>::with_capacity(BUF_SIZE + 1)));
+        let next_frame_rgb8 = Arc::new(Mutex::new(VecDeque::<VideoFrame>::with_capacity(
+            BUF_SIZE + 1,
+        )));
         std::thread::spawn({
             let next_frame_rgb8 = next_frame_rgb8.clone();
             move || {
@@ -107,9 +131,11 @@ impl H264Decoder {
                     let decoded_yuv = decoder.decode(video_packet.as_slice());
                     let decoded_yuv = match decoded_yuv {
                         Ok(decoded) => decoded,
-                        Err(_) => {continue},
+                        Err(_) => continue,
                     };
-                    let Some(decoded_yuv) = decoded_yuv else {continue};
+                    let Some(decoded_yuv) = decoded_yuv else {
+                        continue;
+                    };
 
                     let (width, height) = decoded_yuv.dimension_rgb();
                     let buffer = decoded_yuv.write_bgra8();
@@ -141,7 +167,11 @@ impl H264Decoder {
     }
 
     fn add_video_packet(&self, video_packet: Vec<u8>) {
-        self.sender.lock().expect("Could not get lock on sender").send(DecoderMessage::Frame(video_packet)).expect("Could not send packet to decoder");
+        self.sender
+            .lock()
+            .expect("Could not get lock on sender")
+            .send(DecoderMessage::Frame(video_packet))
+            .expect("Could not send packet to decoder");
     }
 
     fn take_frame(&mut self) -> Option<VideoFrame> {
@@ -155,7 +185,11 @@ impl H264Decoder {
 
 impl Drop for H264Decoder {
     fn drop(&mut self) {
-        self.sender.lock().expect("Could not get lock on sender").send(DecoderMessage::Stop).expect("Could not send end packet to decoder");
+        self.sender
+            .lock()
+            .expect("Could not get lock on sender")
+            .send(DecoderMessage::Stop)
+            .expect("Could not send end packet to decoder");
     }
 }
 
@@ -187,9 +221,12 @@ fn begin_decode(
             continue;
         }
         commands.entity(entity).remove::<H264DecoderLoading>();
-        
+
         if match asset_server.get_load_state(&decoder.video) {
-            Some(load_state) => matches!(load_state, LoadState::Failed) || matches!(load_state, LoadState::NotLoaded),
+            Some(load_state) => {
+                matches!(load_state, LoadState::Failed)
+                    || matches!(load_state, LoadState::NotLoaded)
+            }
             _ => false,
         } {
             commands.entity(entity).remove::<H264Decoder>();
@@ -204,7 +241,10 @@ fn begin_decode(
 
 pub fn decode_video(
     mut commands: Commands,
-    mut query: Query<(Entity, &mut H264Decoder), (Without<H264DecoderPause>, Without<H264DecoderLoading>)>,
+    mut query: Query<
+        (Entity, &mut H264Decoder),
+        (Without<H264DecoderPause>, Without<H264DecoderLoading>),
+    >,
     mut images: ResMut<Assets<Image>>,
     mut update_ev: EventWriter<H264UpdateEvent>,
 ) {
@@ -219,8 +259,14 @@ pub fn decode_video(
                     continue;
                 }
             };
-            if image.texture_descriptor.size.width != frame.width as u32 || image.texture_descriptor.size.height != frame.height as u32 {
-                image.resize(Extent3d { width: frame.width as u32, height: frame.height as u32, depth_or_array_layers: 1 });
+            if image.texture_descriptor.size.width != frame.width as u32
+                || image.texture_descriptor.size.height != frame.height as u32
+            {
+                image.resize(Extent3d {
+                    width: frame.width as u32,
+                    height: frame.height as u32,
+                    depth_or_array_layers: 1,
+                });
             }
 
             image.data = frame.buffer;
@@ -233,7 +279,7 @@ pub fn decode_video(
                 if !decoder.repeat {
                     commands.entity(entity).insert(H264DecoderPause {});
                 }
-            }                
+            }
         }
         // If frame is missed, wait until next game tick
     }
@@ -324,8 +370,7 @@ impl Plugin for H264Plugin {
         if let Some(fps) = self.fps {
             app.insert_resource(Time::<Fixed>::from_hz(fps));
         }
-        app
-            .add_event::<H264UpdateEvent>()
+        app.add_event::<H264UpdateEvent>()
             .add_event::<H264RestartEvent>()
             .init_asset::<H264Video>()
             .init_asset_loader::<H264VideoLoader>()
