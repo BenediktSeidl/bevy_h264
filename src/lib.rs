@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        mpsc::{channel, Sender},
+        mpsc::{sync_channel, SyncSender},
         Arc, Mutex,
     },
 };
@@ -31,7 +31,8 @@ use openh264::{
 };
 use thiserror::Error;
 
-const BUF_SIZE: usize = 10;
+const FRAME_BUF_SIZE: usize = 10;
+const PACKAGE_BUF_SIZE: usize = 10;
 
 #[derive(Asset, TypePath)]
 pub struct H264Video {
@@ -73,8 +74,9 @@ impl AssetLoader for H264VideoLoader {
     }
 }
 
-enum DecoderMessage {
-    Frame(Vec<u8>),
+enum DecoderInput {
+    Package(Vec<u8>),
+    PackagesEnd,
     Stop,
 }
 
@@ -83,6 +85,11 @@ struct VideoFrame {
     width: usize,
     height: usize,
 }
+enum DecoderOutput {
+    VideoEnd,
+    Frame(VideoFrame),
+    None,
+}
 
 #[derive(Component)]
 pub struct H264Decoder {
@@ -90,13 +97,11 @@ pub struct H264Decoder {
     render_target: Handle<Image>,
     repeat: bool,
 
-    next_frame: usize,
-    frame_count: usize,
+    package_count: usize,
+    current_package_index: usize,
 
-    frame_idx: usize,
-
-    sender: Mutex<Sender<DecoderMessage>>,
-    next_frame_rgb8: Arc<Mutex<VecDeque<VideoFrame>>>,
+    decoder_input: Mutex<SyncSender<DecoderInput>>,
+    decoder_output: Arc<Mutex<VecDeque<DecoderOutput>>>,
 }
 
 impl H264Decoder {
@@ -112,19 +117,30 @@ impl H264Decoder {
             TextureFormat::Bgra8UnormSrgb,
             RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
         ));
-        let (sender, receiver) = channel::<DecoderMessage>();
-        let next_frame_rgb8 = Arc::new(Mutex::new(VecDeque::<VideoFrame>::with_capacity(
-            BUF_SIZE + 1,
+        let (decoder_input, receiver) = sync_channel::<DecoderInput>(PACKAGE_BUF_SIZE);
+        let decoder_output = Arc::new(Mutex::new(VecDeque::<DecoderOutput>::with_capacity(
+            FRAME_BUF_SIZE + 1,
         )));
         std::thread::spawn({
-            let next_frame_rgb8 = next_frame_rgb8.clone();
+            let decoder_output = decoder_output.clone();
             move || {
                 let cfg = DecoderConfig::new();
                 let mut decoder = Decoder::with_config(cfg).expect("Failed to create decoder");
                 while let Ok(video_packet) = receiver.recv() {
+                    // we should only have FRAME_BUF_SIZE images in the output queue, otherwise
+                    // memory consumption will raise
+                    while decoder_output.lock().unwrap().len() > FRAME_BUF_SIZE {
+                        std::thread::sleep(std::time::Duration::from_millis(100))
+                    }
                     let video_packet = match video_packet {
-                        DecoderMessage::Frame(vp) => vp,
-                        DecoderMessage::Stop => return,
+                        DecoderInput::Package(vp) => vp,
+                        DecoderInput::PackagesEnd => {
+                            if let Ok(mut queue) = decoder_output.lock() {
+                                queue.push_back(DecoderOutput::VideoEnd);
+                            }
+                            vec![]
+                        }
+                        DecoderInput::Stop => return,
                     };
                     let decoded_yuv = decoder.decode(video_packet.as_slice());
                     let decoded_yuv = match decoded_yuv {
@@ -142,8 +158,8 @@ impl H264Decoder {
                         width,
                         height,
                     };
-                    if let Ok(mut queue) = next_frame_rgb8.lock() {
-                        queue.push_back(frame);
+                    if let Ok(mut queue) = decoder_output.lock() {
+                        queue.push_back(DecoderOutput::Frame(frame));
                     }
                 }
             }
@@ -152,11 +168,10 @@ impl H264Decoder {
             video,
             render_target: render_target.clone(),
             repeat,
-            next_frame: 0,
-            frame_count: 0,
-            frame_idx: 0,
-            sender: Mutex::new(sender),
-            next_frame_rgb8,
+            package_count: 0,
+            current_package_index: 0,
+            decoder_input: Mutex::new(decoder_input),
+            decoder_output,
         }
     }
 
@@ -164,29 +179,29 @@ impl H264Decoder {
         self.render_target.clone()
     }
 
-    fn add_video_packet(&self, video_packet: Vec<u8>) {
-        self.sender
+    fn add_packages_end_marker(&self) {
+        self.decoder_input
             .lock()
-            .expect("Could not get lock on sender")
-            .send(DecoderMessage::Frame(video_packet))
+            .expect("Could not get lock on decoder_input")
+            .send(DecoderInput::PackagesEnd)
             .expect("Could not send packet to decoder");
     }
 
-    fn take_frame(&mut self) -> Option<VideoFrame> {
-        if let Ok(mut queue) = self.next_frame_rgb8.lock() {
-            queue.pop_front()
+    fn take_frame(&mut self) -> DecoderOutput {
+        if let Ok(mut queue) = self.decoder_output.lock() {
+            queue.pop_front().unwrap_or(DecoderOutput::None)
         } else {
-            None
+            DecoderOutput::None
         }
     }
 }
 
 impl Drop for H264Decoder {
     fn drop(&mut self) {
-        self.sender
+        self.decoder_input
             .lock()
             .expect("Could not get lock on sender")
-            .send(DecoderMessage::Stop)
+            .send(DecoderInput::Stop)
             .expect("Could not send end packet to decoder");
     }
 }
@@ -230,14 +245,14 @@ fn begin_decode(
             commands.entity(entity).remove::<H264Decoder>();
         } else {
             if let Some(video) = videos.get(&decoder.video) {
-                // Assume 1 slice per frame
-                decoder.frame_count = video.buffer.len();
+                decoder.package_count = video.buffer.len();
             }
         }
     }
 }
 
 pub fn decode_video(
+    // TODO: maybe should be renamed to display video, it does not decoding?!
     mut commands: Commands,
     mut query: Query<
         (Entity, &mut H264Decoder),
@@ -247,39 +262,41 @@ pub fn decode_video(
     mut update_ev: EventWriter<H264UpdateEvent>,
 ) {
     for (entity, mut decoder) in query.iter_mut() {
-        if let Some(frame) = decoder.take_frame() {
-            let image = match images.get_mut(&decoder.render_target) {
-                Some(image) => image,
-                None => {
-                    // Render target is missing, remove self
-                    println!("Render target is missing");
-                    commands.entity(entity).remove::<H264Decoder>();
-                    continue;
+        match decoder.take_frame() {
+            DecoderOutput::Frame(frame) => {
+                let image = match images.get_mut(&decoder.render_target) {
+                    Some(image) => image,
+                    None => {
+                        // Render target is missing, remove self
+                        println!("Render target is missing");
+                        commands.entity(entity).remove::<H264Decoder>();
+                        continue;
+                    }
+                };
+                if image.texture_descriptor.size.width != frame.width as u32
+                    || image.texture_descriptor.size.height != frame.height as u32
+                {
+                    image.resize(Extent3d {
+                        width: frame.width as u32,
+                        height: frame.height as u32,
+                        depth_or_array_layers: 1,
+                    });
                 }
-            };
-            if image.texture_descriptor.size.width != frame.width as u32
-                || image.texture_descriptor.size.height != frame.height as u32
-            {
-                image.resize(Extent3d {
-                    width: frame.width as u32,
-                    height: frame.height as u32,
-                    depth_or_array_layers: 1,
-                });
+
+                image.data = frame.buffer;
+
+                // Send the event
+                update_ev.send(H264UpdateEvent(entity));
             }
-
-            image.data = frame.buffer;
-
-            // Send the event
-            update_ev.send(H264UpdateEvent(entity));
-            decoder.next_frame = decoder.next_frame + 1;
-            if decoder.next_frame >= decoder.frame_count {
-                decoder.next_frame = 0;
+            DecoderOutput::VideoEnd => {
                 if !decoder.repeat {
                     commands.entity(entity).insert(H264DecoderPause {});
                 }
             }
+            DecoderOutput::None => {
+                // If frame is missed, wait until next game tick
+            }
         }
-        // If frame is missed, wait until next game tick
     }
 }
 
@@ -288,14 +305,26 @@ fn push_packet(
     videos: Res<Assets<H264Video>>,
 ) {
     for mut decoder in query.iter_mut() {
-        // Only push more packets if there is space in the buffer
-        let mut buffer_size = decoder.next_frame_rgb8.lock().unwrap().len();
         if let Some(video) = videos.get(&decoder.video) {
-            while buffer_size < BUF_SIZE {
-                decoder.add_video_packet(video.buffer[decoder.frame_idx].clone());
-                decoder.frame_idx = (decoder.frame_idx + 1) % video.buffer.len();
-                buffer_size += 1;
+            let send_result = decoder
+                .decoder_input
+                .lock()
+                .expect("Could not get lock on decoder_input")
+                .try_send(DecoderInput::Package(
+                    video.buffer[decoder.current_package_index].clone(),
+                ));
+
+            if send_result.is_ok() {
+                if decoder.current_package_index == decoder.package_count - 1 {
+                    // we tell the decoder that this was our last package
+                    // so the decoder can inform us about the last frame
+                    decoder.add_packages_end_marker()
+                }
+                decoder.current_package_index =
+                    (decoder.current_package_index + 1) % video.buffer.len();
             }
+            // maybe we could not send the package, because the decoders input queue is already
+            // full. but its not bad, we will just try again.
         }
     }
 }
@@ -312,10 +341,9 @@ fn restart_video(
 ) {
     for event in restart_ev.read() {
         if let Ok((mut decoder, is_paused)) = query.get_mut(event.0) {
-            decoder.frame_idx = 0;
-            decoder.next_frame = 0;
+            decoder.current_package_index = 0;
             if is_paused {
-                decoder.next_frame_rgb8.lock().unwrap().clear();
+                decoder.decoder_output.lock().unwrap().clear();
             }
         }
     }
