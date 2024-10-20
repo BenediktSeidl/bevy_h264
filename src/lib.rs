@@ -333,7 +333,7 @@ fn push_packet(
 // If the video is not suppose to restart, then you should make sure it has been paused (ideally for a short amount of time)
 // If the video is paused it will clear out the image queue
 #[derive(Event)]
-pub struct H264RestartEvent(Entity);
+pub struct H264RestartEvent(pub Entity);
 
 fn restart_video(
     mut query: Query<(&mut H264Decoder, Has<H264DecoderPause>), Without<H264DecoderLoading>>,
