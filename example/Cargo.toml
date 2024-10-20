@@ -1,9 +1,0 @@
-[package]
-name = "example"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-bevy = "0.14"
-bevy_h264 = { path = "../" }

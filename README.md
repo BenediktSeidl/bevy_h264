@@ -55,6 +55,14 @@ If decoder.repeat == false, then at the end of the video H264DecoderPause will b
 
 This is not hardware accelerated at all. If you want an FPS of 60+ then make sure to compile in release mode
 
+## Examples
+
+You have to specify the `BEVY_ASSET_ROOT` environment variable in order to run the examples:
+
+```
+BEVY_ASSET_ROOT=examples cargo run --example texture
+```
+
 ## Patent and license on h264
 Nothing below is legal advice, just my findings on the subject matter
 
